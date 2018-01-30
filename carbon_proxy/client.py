@@ -215,24 +215,29 @@ async def amain(loop: asyncio.AbstractEventLoop,
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     arguments = parser.parse_args()
 
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
     tcp_sock = bind_socket(
-        socket.AF_INET, socket.SOCK_STREAM,
+        socket.AF_INET if ':' in arguments.tcp_listen else socket.AF_INET6,
+        socket.SOCK_STREAM,
         address=arguments.tcp_listen,
         port=arguments.tcp_port
     )
 
     pickle_sock = bind_socket(
-        socket.AF_INET, socket.SOCK_STREAM,
+        socket.AF_INET if ':' in arguments.pickle_listen else socket.AF_INET6,
+        socket.SOCK_STREAM,
         address=arguments.pickle_listen,
         port=arguments.pickle_port
     )
 
     udp_sock = bind_socket(
-        socket.AF_INET, socket.SOCK_DGRAM,
+        socket.AF_INET if ':' in arguments.udp_listen else socket.AF_INET6,
+        socket.SOCK_DGRAM,
         address=arguments.udp_listen,
         port=arguments.udp_port
     )

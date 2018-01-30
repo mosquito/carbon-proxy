@@ -214,12 +214,15 @@ def make_app(arguments, **kwargs) -> Application:
 def main():
     global SECRET
 
+    logging.basicConfig(level=logging.INFO)
+
     arguments = parser.parse_args()
 
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
     sock = bind_socket(
-        socket.AF_INET, socket.SOCK_STREAM,
+        socket.AF_INET if ':' in arguments.http_address else socket.AF_INET6,
+        socket.SOCK_STREAM,
         address=arguments.http_address,
         port=arguments.http_port
     )
