@@ -221,7 +221,7 @@ def main():
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
     sock = bind_socket(
-        socket.AF_INET if ':' in arguments.http_address else socket.AF_INET6,
+        socket.AF_INET6 if ':' in arguments.http_address else socket.AF_INET,
         socket.SOCK_STREAM,
         address=arguments.http_address,
         port=arguments.http_port

@@ -182,15 +182,20 @@ async def sender(proxy_url: URL, secret):
                 data = msgpack.packb(payload)
 
                 while True:
-                    request = session.post(proxy_url, data=data, headers={
-                        'Content-Type': 'application/octet-stream'
-                    })
-                    async with request as resp:  # type: aiohttp.ClientResponse
-                        if resp.status == HTTPStatus.ACCEPTED:
-                            log.info("Sent %d bytes", len(data))
-                            break
-                        else:
-                            await asyncio.sleep(1)
+                    try:
+                        request = session.post(proxy_url, data=data, headers={
+                            'Content-Type': 'application/octet-stream'
+                        })
+                        async with request as resp:  # type: aiohttp.ClientResponse
+                            if resp.status == HTTPStatus.ACCEPTED:
+                                log.info("Sent %d bytes", len(data))
+                                break
+                            else:
+                                await asyncio.sleep(1)
+                    except:
+                        log.exception("Data sending error")
+                        await asyncio.sleep(1)
+                        continue
 
                 await asyncio.sleep(1)
 
@@ -222,21 +227,21 @@ def main():
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
     tcp_sock = bind_socket(
-        socket.AF_INET if ':' in arguments.tcp_listen else socket.AF_INET6,
+        socket.AF_INET6 if ':' in arguments.tcp_listen else socket.AF_INET,
         socket.SOCK_STREAM,
         address=arguments.tcp_listen,
         port=arguments.tcp_port
     )
 
     pickle_sock = bind_socket(
-        socket.AF_INET if ':' in arguments.pickle_listen else socket.AF_INET6,
+        socket.AF_INET6 if ':' in arguments.pickle_listen else socket.AF_INET,
         socket.SOCK_STREAM,
         address=arguments.pickle_listen,
         port=arguments.pickle_port
     )
 
     udp_sock = bind_socket(
-        socket.AF_INET if ':' in arguments.udp_listen else socket.AF_INET6,
+        socket.AF_INET6 if ':' in arguments.udp_listen else socket.AF_INET,
         socket.SOCK_DGRAM,
         address=arguments.udp_listen,
         port=arguments.udp_port
