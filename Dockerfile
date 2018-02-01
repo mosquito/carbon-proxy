@@ -6,7 +6,7 @@ RUN pip3.6 install uvloop
 ADD requirements.txt /tmp/
 RUN pip3.6 install -r /tmp/requirements.txt && rm -fr /tmp/* /var/tmp/*
 
-ENV VERSION 0.1.3
+ENV VERSION 0.2.0
 
 ADD dist/carbon-proxy-${VERSION}.tar.gz /tmp/
 

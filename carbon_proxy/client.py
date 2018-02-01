@@ -89,13 +89,13 @@ group.add_argument(
 QUEUE = deque()
 
 
-async def tcp_handler(reader: asyncio.StreamReader, *_):
-    log.info("Client connected")
+async def tcp_handler(reader: asyncio.StreamReader,
+                      writer: asyncio.StreamWriter):
+    addr = writer.get_extra_info('peername')
+    log.info("Client connected %r", addr)
 
     while not reader.at_eof():
         try:
-            log.info("Receiving data through TCP")
-
             async with async_timeout.timeout(5):
                 line = await reader.readline()
 
@@ -103,13 +103,20 @@ async def tcp_handler(reader: asyncio.StreamReader, *_):
                 metric = line.decode()
                 name, value, timestamp = metric.split(" ", 3)
                 timestamp = float(timestamp)
-                value = float(value) if '.' in value else int(value)
+
+                if value == 'nan':
+                    value = None
+                else:
+                    value = float(value) if '.' in value else int(value)
+
                 QUEUE.append((name, (timestamp, value)))
         except asyncio.CancelledError:
             log.info('Client connection closed after timeout')
             break
         except:
             continue
+
+    log.info("Client disconnected %r", addr)
 
 
 async def pickle_handler(reader: asyncio.StreamReader, *_):
@@ -135,16 +142,13 @@ async def pickle_handler(reader: asyncio.StreamReader, *_):
 class UDPServerProtocol(asyncio.DatagramProtocol):
 
     def __init__(self):
-        self.queue = asyncio.Queue()
         super().__init__()
 
     def connection_made(self, transport):
         self.transport = transport
 
     def datagram_received(self, data, addr):
-        payload = []
-
-        log.info("Received %d bytes through UDP", len(data))
+        log.debug("Received %d bytes through UDP", len(data))
 
         for line in data.split(b'\n'):
             if not line:
@@ -153,14 +157,13 @@ class UDPServerProtocol(asyncio.DatagramProtocol):
             metric = line.decode()
             name, value, timestamp = metric.split(" ", 3)
             timestamp = float(timestamp)
-            value = float(value) if '.' in value else int(value)
-            payload.append((name, (timestamp, value)))
 
-        if payload:
-            QUEUE.put_nowait(payload)
+            if value == 'nan':
+                value = None
+            else:
+                value = float(value) if '.' in value else int(value)
 
-    def close(self):
-        self.queue.put_nowait(None)
+            QUEUE.append((name, (timestamp, value)))
 
 
 async def sender(proxy_url: URL, secret):
@@ -183,12 +186,18 @@ async def sender(proxy_url: URL, secret):
 
                 while True:
                     try:
-                        request = session.post(proxy_url, data=data, headers={
-                            'Content-Type': 'application/octet-stream'
-                        })
+                        request = session.post(
+                            proxy_url,
+                            data=data,
+                            timeout=30,
+                            headers={
+                                'Content-Type': 'application/octet-stream'
+                            }
+                        )
+                        log.debug("Sending %d bytes to %s", len(data), proxy_url)
                         async with request as resp:  # type: aiohttp.ClientResponse
                             if resp.status == HTTPStatus.ACCEPTED:
-                                log.info("Sent %d bytes", len(data))
+                                log.debug("Sent %d bytes", len(data))
                                 break
                             else:
                                 await asyncio.sleep(1)

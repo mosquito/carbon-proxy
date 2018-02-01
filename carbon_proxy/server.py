@@ -82,12 +82,12 @@ group = parser.add_argument_group('Carbon settings')
 group.add_argument(
     '-H', '--carbon-host', type=str,
     required=True, env_var='CARBON_HOST',
-    help="Pickle protocol host"
+    help="TCP protocol host"
 )
 
 group.add_argument(
-    '-P', '--carbon-port', type=int, default=2004, env_var='CARBON_PORT',
-    help="Pickle protocol port"
+    '-P', '--carbon-port', type=int, default=2003, env_var='CARBON_PORT',
+    help="TCP protocol port"
 )
 
 
@@ -101,16 +101,16 @@ async def send_data(data, host, port, loop):
     if not data:
         return
 
-    payload = pickle.dumps(data)
-
     while True:
         try:
             reader, writer = await asyncio.open_connection(
                 host, port, loop=loop
             )
 
-            header = struct.pack("!L", len(payload))
-            writer.write(header)
+            for name, value, timestamp in data:
+                d = "%s %s %s\n" % (name, value, timestamp)
+                writer.write(d.encode())
+
             await writer.drain()
             writer.close()
             reader.feed_eof()
@@ -118,7 +118,7 @@ async def send_data(data, host, port, loop):
             log.exception("Failed to send data")
             await asyncio.sleep(1, loop=loop)
         else:
-            log.info("Sent %d bytes", len(payload))
+            log.debug("Sent %d items to %s:%d", len(data), host, port)
             break
 
 
@@ -164,7 +164,7 @@ async def statistic_receiver(request: Request):
     if secret != SECRET:
         raise HTTPForbidden()
 
-    payload = msgpack.unpackb(await request.read())
+    payload = msgpack.unpackb(await request.read(), encoding='utf-8')
 
     if not isinstance(payload, list):
         raise HTTPBadRequest()
@@ -174,12 +174,12 @@ async def statistic_receiver(request: Request):
             name, ts_value = metric
             ts, value = ts_value
             ts = float(ts)
-            assert isinstance(value, (int, float))
+            assert isinstance(value, (int, float, type(None)))
         except:
             log.exception("Invalid data in %r", metric)
             raise HTTPBadRequest()
 
-        QUEUE.append((name, (ts, value)))
+        QUEUE.append((name, value, ts))
 
     return Response(content_type='text/plain', status=HTTPStatus.ACCEPTED)
 
