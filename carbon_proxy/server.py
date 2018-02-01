@@ -2,9 +2,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
-import pickle
 import socket
-import struct
 import sys
 import uuid
 from collections import deque
