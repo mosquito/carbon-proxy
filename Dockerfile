@@ -1,14 +1,38 @@
-FROM python:3.6-alpine
+FROM mosquito/ubuntu-python36 as builder
 
-RUN apk --no-cache add gzip tar gcc musl-dev make
-RUN pip3.6 install uvloop
+RUN apt-get install -y \
+    build-essential \
+    make \
+    git-core \
+    libfreetype6-dev \
+    libgif-dev \
+    libjpeg-dev \
+    liblcms2-dev \
+    libopenjp2-7-dev \
+    libpng-dev \
+    libtiff5-dev \
+    libwebp-dev \
+    python3-pip \
+    python3-wheel \
+    virtualenv \
+    tcl-dev \
+    tk-dev \
+    zlib1g-dev
+
+RUN virtualenv -p python3 /usr/share/python3/app
 
 ADD requirements.txt /tmp/
-RUN pip3.6 install -r /tmp/requirements.txt && rm -fr /tmp/* /var/tmp/*
+RUN /usr/share/python3/app/bin/pip install -Ur /tmp/requirements.txt
 
-ENV VERSION 0.2.0
+ADD dist/ /tmp/app/
+RUN /usr/share/python3/app/bin/pip install /tmp/app/*
 
-ADD dist/carbon-proxy-${VERSION}.tar.gz /tmp/
 
-RUN pip3.6 install /tmp/* && \
-    rm -fr /tmp/*
+########################################################################
+FROM mosquito/ubuntu-python36:latest
+
+COPY --from=builder /usr/share/python3/app /usr/share/python3/app
+RUN ln -snf /usr/share/python3/app/bin/carbon-proxy /usr/bin/
+RUN ln -snf /usr/share/python3/app/bin/carbon-proxy-server /usr/bin/
+
+CMD /usr/bin/carbon-proxy

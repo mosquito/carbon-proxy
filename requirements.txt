@@ -1,6 +1,7 @@
 aiohttp<2.4
 ConfigArgParse<0.20
 forkme
+aiomisc
 msgpack-python
 pycares==2.3.0
 setproctitle

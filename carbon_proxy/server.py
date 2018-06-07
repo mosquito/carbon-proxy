@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import logging.handlers
 import os
-import socket
 import sys
 import uuid
 from collections import deque
@@ -25,68 +23,37 @@ from aiohttp.web_urldispatcher import UrlDispatcher  # NOQA
 from configargparse import ArgumentParser
 from setproctitle import setproctitle
 
-from .thread_pool import ThreadPoolExecutor
-from .utils import get_stream_handler, get_syslog_handler, chunk_list, \
-    bind_socket
-
-try:
-    import uvloop
-    asyncio.get_event_loop().close()
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-except ImportError:
-    pass
+from aiomisc.utils import chunk_list, bind_socket, new_event_loop
+from aiomisc.log import basic_config, LogFormat
 
 
 log = logging.getLogger()
-parser = ArgumentParser()
+parser = ArgumentParser(auto_env_var_prefix="APP_")
 
-parser.add_argument('-f', '--forks', type=int, env_var="FORKS", default=4)
+parser.add_argument('-f', '--forks', type=int, default=4)
 parser.add_argument('-D', '--debug', action='store_true')
 
 
-parser.add_argument(
-    '--log-level',
-    choices=('debug', 'info', 'warning', 'error', 'fatal'),
-    default='info', env_var='LOG_LEVEL',
-)
+parser.add_argument('--log-level', default='info',
+                    choices=('debug', 'info', 'warning', 'error', 'fatal'))
 
-parser.add_argument(
-    '--log-format',
-    choices=('syslog', 'stderr'),
-    default='stderr',
-    env_var='LOG_FORMAT',
-)
+parser.add_argument('--log-format', choices=LogFormat.choices(),
+                    default='color')
 
-parser.add_argument('--pool-size', default=4, type=int, env_var='POOL_SIZE')
+parser.add_argument('--pool-size', default=4, type=int)
 
 
 group = parser.add_argument_group('HTTP settings')
-group.add_argument(
-    '--http-address', type=str,
-    default='0.0.0.0', env_var='HTTP_ADDRESS',
-)
-
-group.add_argument(
-    '--http-port', type=int,
-    default=8081, env_var='HTTP_PORT',
-)
-
-group.add_argument(
-    '-S', '--http-secret', type=str,
-    required=True, env_var='HTTP_SECRET',
-)
+group.add_argument('--http-address', type=str, default='0.0.0.0')
+group.add_argument('--http-port', type=int, default=8081)
+group.add_argument('-S', '--http-secret', type=str, required=True)
 
 group = parser.add_argument_group('Carbon settings')
-group.add_argument(
-    '-H', '--carbon-host', type=str,
-    required=True, env_var='CARBON_HOST',
-    help="TCP protocol host"
-)
+group.add_argument('-H', '--carbon-host', type=str, required=True,
+                   help="TCP protocol host")
 
-group.add_argument(
-    '-P', '--carbon-port', type=int, default=2003, env_var='CARBON_PORT',
-    help="TCP protocol port"
-)
+group.add_argument('-P', '--carbon-port', type=int, default=2003,
+                   help="TCP protocol port")
 
 
 QUEUE = deque()
@@ -212,18 +179,14 @@ def make_app(arguments, **kwargs) -> Application:
 def main():
     global SECRET
 
-    logging.basicConfig(level=logging.INFO)
-
     arguments = parser.parse_args()
+    basic_config(level=arguments.log_level,
+                 log_format=arguments.log_format,
+                 buffered=False)
 
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
-    sock = bind_socket(
-        socket.AF_INET6 if ':' in arguments.http_address else socket.AF_INET,
-        socket.SOCK_STREAM,
-        address=arguments.http_address,
-        port=arguments.http_port
-    )
+    sock = bind_socket(address=arguments.http_address, port=arguments.http_port)
 
     forkme.fork(arguments.forks)
 
@@ -231,24 +194,8 @@ def main():
 
     SECRET = arguments.http_secret
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = new_event_loop(arguments.pool_size)
     loop.set_debug(arguments.debug)
-
-    pool = ThreadPoolExecutor(arguments.pool_size, loop=loop)
-    loop.set_default_executor(pool)
-
-    if arguments.log_format == 'syslog':
-        log_handler = get_syslog_handler(loop)
-    elif arguments.log_format == 'stderr':
-        log_handler = get_stream_handler(loop)
-    else:
-        raise ValueError('Invalid log format')
-
-    logging.basicConfig(
-        level=getattr(logging, arguments.log_level.upper(), logging.INFO),
-        handlers=[log_handler],
-    )
 
     app = make_app(arguments)
     app._debug = arguments.debug
@@ -260,6 +207,10 @@ def main():
         "Starting application http://%s:%d",
         arguments.http_address, arguments.http_port
     )
+
+    basic_config(level=arguments.log_level,
+                 log_format=arguments.log_format,
+                 buffered=True, loop=loop)
 
     try:
         run_app(sock=sock, loop=loop, app=app, print=log.debug)
