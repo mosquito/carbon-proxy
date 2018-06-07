@@ -1,2 +1,5 @@
 FROM carbon-proxy-base
-CMD /usr/local/bin/carbon-proxy
+RUN mkdir -p /var/lib/carbon-proxy
+
+VOLUME /var/lib/carbon-proxy
+CMD ["/usr/bin/carbon-proxy", "--storage=/var/lib/carbon-proxy"]

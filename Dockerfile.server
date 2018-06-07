@@ -1,2 +1,2 @@
 FROM carbon-proxy-base
-CMD /usr/local/bin/carbon-proxy-server
+CMD /usr/bin/carbon-proxy-server

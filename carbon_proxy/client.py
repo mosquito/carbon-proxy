@@ -1,23 +1,25 @@
 import asyncio
+import builtins
+import io
 import logging
 import os
 import pickle
 import socket
 import struct
 import sys
+from http import HTTPStatus
+from pathlib import Path
+from setproctitle import setproctitle
+from threading import RLock
 
 import aiohttp
-from http import HTTPStatus
-
 import async_timeout
 import forkme
-from collections import deque
-
 import msgpack
 from aiomisc.log import basic_config, LogFormat
-from aiomisc.utils import chunk_list, bind_socket, new_event_loop
+from aiomisc.thread_pool import threaded
+from aiomisc.utils import bind_socket, new_event_loop
 from configargparse import ArgumentParser
-from setproctitle import setproctitle
 from yarl import URL
 
 
@@ -51,8 +53,81 @@ group = parser.add_argument_group('Carbon proxy server settings')
 group.add_argument('-U', '--carbon-proxy-url', type=URL, required=True)
 group.add_argument('-S', '--carbon-proxy-secret', type=str, required=True)
 
+group = parser.add_argument_group('Storage settings')
+group.add_argument('-s', '--storage', type=Path, required=True)
 
-QUEUE = deque()
+
+class Storage:
+    def __init__(self, path, loop=None):
+        self.loop = loop or asyncio.get_event_loop()
+        self.path = path
+
+        self._lock = RLock()
+
+        open(self.path, 'a').close()
+
+        self.packer = msgpack.Packer(use_bin_type=True, encoding='utf-8')
+
+    @threaded
+    def _write(self, obj):
+        log.debug("Writing to %r", self.path)
+
+        with open(self.path, 'ab') as fp:
+            with self._lock:
+                payload = self.packer.pack(obj)
+                fp.write(struct.pack("!I", len(payload)))
+                fp.write(payload)
+
+    def write(self, obj):
+        return self.loop.create_task(self._write(obj))
+
+    @threaded
+    def _read(self, max_size=1000):
+        with self._lock:
+            with open(self.path, 'rb+') as fp:
+                result = []
+
+                while True:
+                    length = fp.read(4)
+                    if len(length) < 4:
+                        break
+
+                    length = struct.unpack('!I', length)[0]
+
+                    payload = fp.read(length)
+
+                    if len(payload) < length:
+                        break
+
+                    result.append(
+                        msgpack.unpackb(payload, encoding='utf-8')
+                    )
+
+                    if len(result) >= max_size:
+                        break
+
+                fp.truncate(0)
+
+            return result
+
+    async def read(self, count=1, timeout=1):
+        result = []
+        deadline = self.loop.time() + timeout
+
+        while True:
+            for item in await self._read():
+                result.append(item)
+
+            if not result:
+                await asyncio.sleep(timeout / 4, loop=self.loop)
+
+            if len(result) > count or self.loop.time() >= deadline:
+                break
+
+        return result
+
+
+STORAGE = None      # type: Storage
 
 
 async def tcp_handler(reader: asyncio.StreamReader,
@@ -75,7 +150,7 @@ async def tcp_handler(reader: asyncio.StreamReader,
                 else:
                     value = float(value) if '.' in value else int(value)
 
-                QUEUE.append((name, (timestamp, value)))
+                await STORAGE.write((name, (timestamp, value)))
         except asyncio.CancelledError:
             log.info('Client connection closed after timeout')
             break
@@ -83,6 +158,24 @@ async def tcp_handler(reader: asyncio.StreamReader,
             continue
 
     log.info("Client disconnected %r", addr)
+
+
+class RestrictedUnpickler(pickle.Unpickler):
+    safe_builtins = frozenset({
+        'int',
+        'float',
+        'str',
+        'tuple',
+    })
+
+    def find_class(self, module, name):
+        # Only allow safe classes from builtins.
+        if module == "builtins" and name in self.safe_builtins:
+            return getattr(builtins, name)
+
+        # Forbid everything else.
+        raise pickle.UnpicklingError(
+            "global '%s.%s' is forbidden" % (module, name))
 
 
 async def pickle_handler(reader: asyncio.StreamReader, *_):
@@ -93,12 +186,16 @@ async def pickle_handler(reader: asyncio.StreamReader, *_):
 
             log.info("Receiving %d bytes through Pickle", size)
 
-            for metric in pickle.loads(await reader.readexactly(size)):
+            data = RestrictedUnpickler(
+                io.BytesIO(await reader.readexactly(size))
+            ).load()
+
+            for metric in data:
                 try:
                     name, ts_value = metric
                     ts, value = ts_value
 
-                    QUEUE.append((name, (ts, value)))
+                    await STORAGE.write((name, (ts, value)))
                 except:
                     continue
         except asyncio.IncompleteReadError:
@@ -129,52 +226,45 @@ class UDPServerProtocol(asyncio.DatagramProtocol):
             else:
                 value = float(value) if '.' in value else int(value)
 
-            QUEUE.append((name, (timestamp, value)))
+            STORAGE.write((name, (timestamp, value)))
 
 
-async def sender(proxy_url: URL, secret):
+async def sender(proxy_url: URL, secret, send_deadline=5):
     headers = {
         "Authorization": "Bearer %s" % secret
     }
 
     async with aiohttp.ClientSession(headers=headers) as session:
         while True:
-            if not len(QUEUE):
-                await asyncio.sleep(1)
+            payload = await STORAGE.read(count=10000, timeout=send_deadline)
+
+            if not payload:
+                log.debug('Skipping sending attempt because no data.')
                 continue
 
-            log.info("Sending metrics. Queue size = %s", len(QUEUE))
+            data = msgpack.packb(payload)
 
-            metrics = []
-            while QUEUE:
-                metrics.append(QUEUE.popleft())
-
-            for payload in chunk_list(metrics, 10000):
-                data = msgpack.packb(payload)
-
-                while True:
-                    try:
-                        request = session.post(
-                            proxy_url,
-                            data=data,
-                            timeout=30,
-                            headers={
-                                'Content-Type': 'application/octet-stream'
-                            }
-                        )
-                        log.debug("Sending %d bytes to %s", len(data), proxy_url)
-                        async with request as resp:  # type: aiohttp.ClientResponse
-                            if resp.status == HTTPStatus.ACCEPTED:
-                                log.debug("Sent %d bytes", len(data))
-                                break
-                            else:
-                                await asyncio.sleep(1)
-                    except:
-                        log.exception("Data sending error")
-                        await asyncio.sleep(1)
-                        continue
-
-                await asyncio.sleep(1)
+            while True:
+                try:
+                    request = session.post(
+                        proxy_url,
+                        data=data,
+                        timeout=30,
+                        headers={
+                            'Content-Type': 'application/octet-stream'
+                        }
+                    )
+                    log.debug("Sending %d bytes to %s", len(data), proxy_url)
+                    async with request as resp:  # type: aiohttp.ClientResponse
+                        if resp.status == HTTPStatus.ACCEPTED:
+                            log.debug("Sent %d bytes", len(data))
+                            break
+                        else:
+                            await asyncio.sleep(1)
+                except:
+                    log.exception("Data sending error")
+                    await asyncio.sleep(1)
+                    continue
 
 
 async def amain(loop: asyncio.AbstractEventLoop,
@@ -197,6 +287,8 @@ async def amain(loop: asyncio.AbstractEventLoop,
 
 
 def main():
+    global STORAGE
+
     arguments = parser.parse_args()
 
     basic_config(level=arguments.log_level,
@@ -222,6 +314,12 @@ def main():
         port=arguments.udp_port
     )
 
+    test_path = os.path.join(arguments.storage, '.test')
+    with open(test_path, 'ab+') as fp:
+        assert fp.truncate(0) == 0, (
+            "Truncating not supported on %r" % arguments.storage
+        )
+
     forkme.fork(arguments.forks)
 
     setproctitle(os.path.basename("[Worker] %s" % sys.argv[0]))
@@ -239,6 +337,13 @@ def main():
             arguments.carbon_proxy_url,
             arguments.carbon_proxy_secret
         )
+    )
+
+    STORAGE = Storage(
+        os.path.join(
+            arguments.storage,
+            "%03d.bin" % (forkme.get_id() or 0)
+        ), loop=loop
     )
 
     try:
