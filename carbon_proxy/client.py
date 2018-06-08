@@ -61,7 +61,7 @@ group.add_argument('-s', '--storage', type=Path, required=True)
 class Storage:
     MAGIC = b'\xad\xec'
 
-    def __init__(self, path, loop=None, flush_interval=0.1):
+    def __init__(self, path, loop=None, flush_interval=0.5):
         self.loop = loop or asyncio.get_event_loop()
         self.path = path
 
