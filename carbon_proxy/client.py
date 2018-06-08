@@ -17,6 +17,7 @@ import async_timeout
 import forkme
 import msgpack
 from aiomisc.log import basic_config, LogFormat
+from aiomisc.periodic import PeriodicCallback
 from aiomisc.thread_pool import threaded
 from aiomisc.utils import bind_socket, new_event_loop
 from configargparse import ArgumentParser
@@ -58,25 +59,44 @@ group.add_argument('-s', '--storage', type=Path, required=True)
 
 
 class Storage:
-    def __init__(self, path, loop=None):
+    MAGIC = b'\xad\xec'
+
+    def __init__(self, path, loop=None, flush_interval=0.1):
         self.loop = loop or asyncio.get_event_loop()
         self.path = path
 
         self._lock = RLock()
 
-        open(self.path, 'a').close()
+        # create a file
+        open(self.path, 'ab').close()
+
+        self.__buffer = io.BytesIO()
+        self.__write_flush = PeriodicCallback(self._flush)
+        self.__write_flush.start(flush_interval, self.loop)
 
         self.packer = msgpack.Packer(use_bin_type=True, encoding='utf-8')
 
     @threaded
-    def _write(self, obj):
-        log.debug("Writing to %r", self.path)
+    def _flush(self):
+        with self._lock:
+            payload = self.__buffer.getvalue()
 
-        with open(self.path, 'ab') as fp:
-            with self._lock:
-                payload = self.packer.pack(obj)
-                fp.write(struct.pack("!I", len(payload)))
+            if not payload:
+                return
+
+            with open(self.path, 'ab') as fp:
                 fp.write(payload)
+                log.debug("Flushing %d bytes", len(payload))
+
+            self.__buffer = io.BytesIO()
+
+    @threaded
+    def _write(self, obj):
+        with self._lock:
+            self.__buffer.write(self.MAGIC)
+            payload = self.packer.pack(obj)
+            self.__buffer.write(struct.pack("!I", len(payload)))
+            self.__buffer.write(payload)
 
     def write(self, obj):
         return self.loop.create_task(self._write(obj))
@@ -88,12 +108,17 @@ class Storage:
                 result = []
 
                 while True:
+                    magic = fp.read(2)
+                    if magic and magic != self.MAGIC:
+                        log.error('Bad storage file truncating')
+                        fp.truncate(0)
+                        break
+
                     length = fp.read(4)
                     if len(length) < 4:
                         break
 
                     length = struct.unpack('!I', length)[0]
-
                     payload = fp.read(length)
 
                     if len(payload) < length:
