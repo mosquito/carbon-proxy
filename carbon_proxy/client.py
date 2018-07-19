@@ -270,17 +270,17 @@ async def sender(proxy_url: URL, secret, send_deadline=5):
 async def amain(loop: asyncio.AbstractEventLoop,
                 tcp_sock, pickle_sock, udp_sock):
 
-    log.info("Starting TCP server on %s:%d", *tcp_sock.getsockname())
+    log.info("Starting TCP server on %s:%d", *tcp_sock.getsockname()[:2])
     await asyncio.start_server(
         tcp_handler, None, None, sock=tcp_sock, loop=loop
     )
 
-    log.info("Starting Pickle server on %s:%d", *pickle_sock.getsockname())
+    log.info("Starting Pickle server on %s:%d", *pickle_sock.getsockname()[:2])
     await asyncio.start_server(
         pickle_handler, None, None, sock=pickle_sock, loop=loop
     )
 
-    log.info("Starting UDP server on %s:%d", *udp_sock.getsockname())
+    log.info("Starting UDP server on %s:%d", *udp_sock.getsockname()[:2])
     await loop.create_datagram_endpoint(
         UDPServerProtocol, sock=udp_sock
     )
