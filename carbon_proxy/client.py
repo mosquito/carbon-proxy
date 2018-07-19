@@ -130,6 +130,22 @@ class Storage:
 STORAGE = None      # type: Storage
 
 
+def parse_line(line):
+    try:
+        metric = line.decode()
+        name, value, timestamp = metric.split(" ", 3)
+        timestamp = float(timestamp)
+
+        if value == 'nan':
+            value = None
+        else:
+            value = float(value) if '.' in value else int(value)
+
+        return STORAGE.write((name, (timestamp, value)))
+    except:
+        log.warning('Cannot process received line')
+
+
 async def tcp_handler(reader: asyncio.StreamReader,
                       writer: asyncio.StreamWriter):
     addr = writer.get_extra_info('peername')
@@ -139,23 +155,15 @@ async def tcp_handler(reader: asyncio.StreamReader,
         try:
             async with async_timeout.timeout(5):
                 line = await reader.readline()
-
             if line:
-                metric = line.decode()
-                name, value, timestamp = metric.split(" ", 3)
-                timestamp = float(timestamp)
-
-                if value == 'nan':
-                    value = None
-                else:
-                    value = float(value) if '.' in value else int(value)
-
-                await STORAGE.write((name, (timestamp, value)))
+                parse_line(line)
         except asyncio.CancelledError:
             log.info('Client connection closed after timeout')
             break
-        except:
-            continue
+        except ConnectionResetError:
+            log.warning('Client connection reset')
+            reader.feed_eof()
+            break
 
     log.info("Client disconnected %r", addr)
 
@@ -214,19 +222,8 @@ class UDPServerProtocol(asyncio.DatagramProtocol):
         log.debug("Received %d bytes through UDP", len(data))
 
         for line in data.split(b'\n'):
-            if not line:
-                continue
-
-            metric = line.decode()
-            name, value, timestamp = metric.split(" ", 3)
-            timestamp = float(timestamp)
-
-            if value == 'nan':
-                value = None
-            else:
-                value = float(value) if '.' in value else int(value)
-
-            STORAGE.write((name, (timestamp, value)))
+            if line:
+                parse_line(line)
 
 
 async def sender(proxy_url: URL, secret, send_deadline=5):
