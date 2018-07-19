@@ -130,7 +130,7 @@ class Storage:
 STORAGE = None      # type: Storage
 
 
-def process_line(line):
+def parse_line(line):
     try:
         metric = line.decode()
         name, value, timestamp = metric.split(" ", 3)
@@ -156,7 +156,7 @@ async def tcp_handler(reader: asyncio.StreamReader,
             async with async_timeout.timeout(5):
                 line = await reader.readline()
             if line:
-                process_line(line)
+                parse_line(line)
         except asyncio.CancelledError:
             log.info('Client connection closed after timeout')
             break
@@ -223,7 +223,7 @@ class UDPServerProtocol(asyncio.DatagramProtocol):
 
         for line in data.split(b'\n'):
             if line:
-                process_line(line)
+                parse_line(line)
 
 
 async def sender(proxy_url: URL, secret, send_deadline=5):
