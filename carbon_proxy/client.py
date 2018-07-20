@@ -157,7 +157,7 @@ async def tcp_handler(reader: asyncio.StreamReader,
                 line = await reader.readline()
             if line:
                 parse_line(line)
-        except asyncio.TimeoutError:
+        except (asyncio.CancelledError, asyncio.TimeoutError):
             log.info('Client connection closed after timeout')
             break
         except ConnectionResetError:
