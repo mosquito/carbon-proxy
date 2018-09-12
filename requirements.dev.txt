@@ -1,5 +1,4 @@
 coverage!=4.3
-pylama
 pytest
 pytest-asyncio
 pytest-cov

@@ -1,8 +1,8 @@
 all: build
 
 build: image
-	docker build -t mosquito/carbon-proxy:server -f Dockerfile.server .
-	docker build -t mosquito/carbon-proxy:client -f Dockerfile.client .
+	docker build -t mosquito/carbon-proxy:server --target carbon-proxy-server .
+	docker build -t mosquito/carbon-proxy:client --target carbon-proxy .
 
 push: build
 	docker push mosquito/carbon-proxy:server
