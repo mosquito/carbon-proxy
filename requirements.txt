@@ -2,7 +2,6 @@ aiohttp~=3.4
 aiomisc~=0.9
 ConfigArgParse<0.20
 forklib
-janus
 msgpack-python
 pycares==2.3.0
 setproctitle

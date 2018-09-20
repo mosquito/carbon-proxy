@@ -7,8 +7,8 @@ import pickle
 import socket
 import struct
 import sys
-from contextvars import ContextVar
 from contextlib import suppress
+from contextvars import ContextVar
 from http import HTTPStatus
 from pathlib import Path
 from setproctitle import setproctitle
@@ -20,8 +20,8 @@ import async_timeout
 import forklib
 import msgpack
 from aiomisc.entrypoint import entrypoint
-from aiomisc.service import TCPServer, UDPServer, Service
 from aiomisc.log import basic_config, LogFormat
+from aiomisc.service import TCPServer, UDPServer, Service
 from aiomisc.thread_pool import threaded
 from aiomisc.utils import bind_socket
 from configargparse import ArgumentParser
@@ -66,7 +66,7 @@ Registry = ContextVar("Registry")
 
 
 class Storage:
-    ROTATE_SIZE = 10 * (2 ** 20)
+    ROTATE_SIZE = 2 ** 20
 
     def _write_to(self, fp, data, seek=None, truncate=False):
         if seek is not None:
@@ -98,12 +98,10 @@ class Storage:
 
     def __init__(self, path):
         self.write_lock = RLock()
-        self.read_lock = RLock()
         self.meta_lock = RLock()
 
         self.path = path
         self.write_fp = open(path, "ab")
-        self.read_fp = open(path, "rb")
         self.pos_fp = open("%s.pos" % path, "ab+")
 
         self.packer = msgpack.Packer(use_bin_type=True, encoding='utf-8')
@@ -113,7 +111,7 @@ class Storage:
             return self._write_to(self.write_fp, obj)
 
     def read(self):
-        with self.read_lock:
+        with open(self.path, 'rb') as fp:
             self.write_fp.flush()
 
             try:
@@ -122,48 +120,48 @@ class Storage:
                 pos = 0
 
             try:
-                for item, pos in self._read_from(self.read_fp, seek=pos):
+                for item, pos in self._read_from(fp, seek=pos):
                     self._write_to(self.pos_fp, pos, seek=0, truncate=True)
                     yield item
             except msgpack.OutOfData:
+                if self.size() > self.ROTATE_SIZE:
+                    self.clear()
+
                 return
             finally:
                 self.pos_fp.flush()
 
-            if self.size() > self.ROTATE_SIZE:
-                self.clear()
-
     def size(self):
         return os.stat(self.path).st_size
 
-    def reset(self):
-        with self.read_lock, self.write_lock:
-            self._write_to(self.pos_fp, 0, 0)
-
     def clear(self):
         with self.write_lock:
-            with open(self.path, 'wb+'):
-                pass
 
-            self.reset()
+            self.write_fp.seek(0)
+            self.write_fp.truncate(0)
+
+            self._write_to(self.pos_fp, 0, 0, truncate=True)
+
+            log.info(
+                'Truncating file %r new size is %s',
+                self.path,
+                self.size()
+            )
 
     write_async = threaded(write)
-    reset_async = threaded(reset)
     clear_async = threaded(clear)
     size_async = threaded(size)
 
-    async def read_async(self, chunk_size=10000):
-        @threaded
-        def reader():
-            result = []
-            for item in self.read():
-                if len(result) > chunk_size:
-                    break
+    @threaded
+    def read_async(self, chunk_size=2000):
+        result = []
+        for item in self.read():
+            if len(result) > chunk_size:
+                break
 
-                result.append(item)
+            result.append(item)
 
-            return result
-        return await reader()
+        return result
 
 
 class StorageBase:
@@ -276,7 +274,7 @@ class SenderService(Service, StorageBase):
     secret: str
     send_interval: int = 20
     send_timeout: int = 30
-    storage_poll_timeout: int = 10
+    storage_poll_interval: int = 10
 
     async def start(self):
         headers = {
@@ -287,17 +285,19 @@ class SenderService(Service, StorageBase):
         while True:
             try:
                 async with aiohttp.ClientSession(headers=headers) as session:
-                    payload = await self.storage.read_async(self.send_timeout)
+                    payload = await self.storage.read_async()
 
                     if not payload:
-                        await asyncio.sleep(self.storage_poll_timeout)
+                        await asyncio.sleep(self.storage_poll_interval)
                         continue
 
                     data = msgpack.packb(payload)
 
                     while True:
-                        request = session.post(self.proxy_url, data=data,
-                                               timeout=self.send_timeout)
+                        request = session.post(
+                            self.proxy_url, data=data,
+                            timeout=self.send_timeout
+                        )
 
                         log.info("Sending %d bytes to %s",
                                  len(data), self.proxy_url)
@@ -305,6 +305,9 @@ class SenderService(Service, StorageBase):
                         async with request as resp:
                             if resp.status == HTTPStatus.ACCEPTED:
                                 log.debug("Sent %d bytes", len(payload))
+                                break
+                            elif resp.status == HTTPStatus.BAD_REQUEST:
+                                log.warning("Bad request %r", payload)
                                 break
                             else:
                                 log.warning("Wrong response %s retrying",
