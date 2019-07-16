@@ -81,7 +81,7 @@ class Storage:
         if seek is not None:
             fp.seek(seek)
 
-        unpacker = msgpack.Unpacker(fp)
+        unpacker = msgpack.Unpacker(fp, raw=False)
 
         while True:
             pos = fp.tell()
@@ -274,6 +274,7 @@ class SenderService(PeriodicService, StorageBase):
     interval: int = 10
     send_timeout: int = 30
     headers: dict = None
+    http_session: aiohttp.ClientSession
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

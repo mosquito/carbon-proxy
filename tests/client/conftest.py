@@ -1,5 +1,7 @@
 import asyncio
 
+import aiohttp
+from aiohttp import test_utils
 from aiocarbon.storage import RawStorage
 from aiocarbon.protocol import TCPClient
 import pytest
@@ -58,12 +60,12 @@ def arguments(tcp_port, udp_port, pickle_port, server_port, proxy_secret,
 @pytest.fixture
 def services(carbon_tcp_server, carbon_udp_server, carbon_pickle_server,
              sender_service):
-    return [
+    return filter(None, [
         carbon_tcp_server,
         carbon_udp_server,
         carbon_pickle_server,
         sender_service,
-    ]
+    ])
 
 
 @pytest.fixture
@@ -148,3 +150,24 @@ async def send_to_udp(arguments, loop):
         finally:
             transport.close()
     return send_data
+
+
+async def proxy_server_handler_mock(request):
+    request.app['calls'].append(await request.read())
+    return aiohttp.web.Response(status=202)
+
+
+@pytest.fixture
+async def proxy_server_mock(server_port, loop):
+    app = aiohttp.web.Application()
+    app['calls'] = []
+    app.router.add_route('post', '/', proxy_server_handler_mock)
+
+    server = test_utils.TestServer(app, port=server_port)
+    client = test_utils.TestClient(server)
+    await server.start_server(loop)
+    try:
+        yield app
+    finally:
+        await client.close()
+        await server.close()
