@@ -1,9 +1,8 @@
-aiohttp~=3.4
-aiomisc~=0.9
+aiohttp~=3.5.4
+aiomisc~=8.0.0
 ConfigArgParse<0.20
-forklib
-msgpack-python
+forklib~=0.2.1
+msgpack-python~=0.5.6
 pycares==2.3.0
-setproctitle
+setproctitle~=1.1.10
 yarl<=1.2.0
-zstd<1.4

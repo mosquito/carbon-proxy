@@ -19,11 +19,10 @@ import aiohttp
 import async_timeout
 import forklib
 import msgpack
-from aiomisc.entrypoint import entrypoint
-from aiomisc.log import basic_config, LogFormat
+from aiomisc import entrypoint, threaded, bind_socket
 from aiomisc.service import TCPServer, UDPServer, Service
-from aiomisc.thread_pool import threaded
-from aiomisc.utils import bind_socket
+from aiomisc.service.periodic import PeriodicService
+from aiomisc.log import basic_config, LogFormat
 from configargparse import ArgumentParser
 from yarl import URL
 
@@ -82,7 +81,7 @@ class Storage:
         if seek is not None:
             fp.seek(seek)
 
-        unpacker = msgpack.Unpacker(fp, encoding='utf-8')
+        unpacker = msgpack.Unpacker(fp)
 
         while True:
             pos = fp.tell()
@@ -104,7 +103,7 @@ class Storage:
         self.write_fp = open(path, "ab")
         self.pos_fp = open("%s.pos" % path, "ab+")
 
-        self.packer = msgpack.Packer(use_bin_type=True, encoding='utf-8')
+        self.packer = msgpack.Packer(use_bin_type=True)
 
     def write(self, obj):
         with self.write_lock:
@@ -165,9 +164,7 @@ class Storage:
 
 
 class StorageBase:
-    @property
-    def storage(self):
-        return Registry.get()['storage']
+    ...
 
 
 class CarbonTCPServer(TCPServer, StorageBase):
@@ -268,56 +265,57 @@ class CarbonUDPServer(UDPServer, StorageBase):
             log.debug("Data has been written to storage")
 
 
-class SenderService(Service, StorageBase):
-    proxy_url: URL
-    resend_interval: int = 5
-    secret: str
-    send_interval: int = 20
-    send_timeout: int = 30
-    storage_poll_interval: int = 10
+class SenderService(PeriodicService, StorageBase):
 
-    async def start(self):
-        headers = {
+    __required__ = ('proxy_url', 'secret',)
+
+    proxy_url: URL
+    secret: str
+    interval: int = 10
+    send_timeout: int = 30
+    headers: dict = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers = {
             "Authorization": "Bearer %s" % self.secret,
             'Content-Type': 'application/octet-stream'
         }
 
+    async def start(self):
+        self.http_session = aiohttp.ClientSession(headers=self.headers)
+        await super().start()
+
+    async def stop(self, *args, **kwargs):
+        await self.http_session.close()
+        await super().stop(*args, **kwargs)
+
+    async def callback(self):
+        payload = await self.storage.read_async()
+
+        if not payload:
+            return
+
+        data = msgpack.packb(payload)
+
         while True:
-            try:
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    payload = await self.storage.read_async()
+            request = self.http_session.post(
+                self.proxy_url,
+                data=data,
+                timeout=self.send_timeout,
+            )
 
-                    if not payload:
-                        await asyncio.sleep(self.storage_poll_interval)
-                        continue
+            log.info("Sending %d bytes to %s", len(data), self.proxy_url)
 
-                    data = msgpack.packb(payload)
-
-                    while True:
-                        request = session.post(
-                            self.proxy_url, data=data,
-                            timeout=self.send_timeout
-                        )
-
-                        log.info("Sending %d bytes to %s",
-                                 len(data), self.proxy_url)
-
-                        async with request as resp:
-                            if resp.status == HTTPStatus.ACCEPTED:
-                                log.debug("Sent %d bytes", len(payload))
-                                break
-                            elif resp.status == HTTPStatus.BAD_REQUEST:
-                                log.warning("Bad request %r", payload)
-                                break
-                            else:
-                                log.warning("Wrong response %s retrying",
-                                            resp.status)
-
-                                await asyncio.sleep(self.resend_interval)
-            except Exception:
-                log.exception("Error when sending data")
-                await asyncio.sleep(1)
-                continue
+            async with request as resp:
+                if resp.status == HTTPStatus.ACCEPTED:
+                    log.debug("Sent %d bytes", len(payload))
+                    break
+                elif resp.status == HTTPStatus.BAD_REQUEST:
+                    log.warning("Bad request %r", payload)
+                    break
+                else:
+                    log.warning("Wrong response %s. Retrying...", resp.status)
 
 
 def main():
