@@ -8,7 +8,6 @@ import socket
 import struct
 import sys
 from contextlib import suppress
-from contextvars import ContextVar
 from http import HTTPStatus
 from pathlib import Path
 from setproctitle import setproctitle
@@ -59,9 +58,6 @@ group.add_argument('-S', '--carbon-proxy-secret', type=str, required=True)
 
 group = parser.add_argument_group('Storage settings')
 group.add_argument('-s', '--storage', type=Path, required=True)
-
-
-Registry = ContextVar("Registry")
 
 
 class Storage:
@@ -329,8 +325,6 @@ def main():
 
     setproctitle(os.path.basename("[Master] %s" % sys.argv[0]))
 
-    Registry.set(dict())
-
     tcp_sock = bind_socket(
         address=arguments.tcp_listen,
         port=arguments.tcp_port
@@ -348,24 +342,23 @@ def main():
         port=arguments.udp_port
     )
 
-    services = [
-        CarbonTCPServer(sock=tcp_sock),
-        CarbonPickleServer(sock=pickle_sock),
-        CarbonUDPServer(sock=udp_sock),
-        SenderService(
-            proxy_url=arguments.carbon_proxy_url,
-            secret=arguments.carbon_proxy_secret,
-        )
-    ]
-
     def run():
         setproctitle(os.path.basename("[Worker] %s" % sys.argv[0]))
 
-        registry = {'storage': Storage(
+        storage = Storage(
             os.path.join(arguments.storage, "%03d.db" % forklib.get_id())
-        )}
+        )
 
-        Registry.set(MappingProxyType(registry))
+        services = [
+            CarbonTCPServer(sock=tcp_sock, storage=storage),
+            CarbonPickleServer(sock=pickle_sock, storage=storage),
+            CarbonUDPServer(sock=udp_sock, storage=storage),
+            SenderService(
+                proxy_url=arguments.carbon_proxy_url,
+                secret=arguments.carbon_proxy_secret,
+                storage=storage,
+            )
+        ]
 
         with entrypoint(*services,
                         log_level=arguments.log_level,
