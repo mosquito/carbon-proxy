@@ -121,3 +121,30 @@ async def proxy_carbon_client(arguments, loop):
         yield carbon_client
     finally:
         periodic_send_task.cancel()
+
+
+class UDPClientProtocol:
+
+    def __init__(self, message, loop):
+        self.message = message
+        self.on_close = loop.create_future()
+
+    def connection_made(self, transport):
+        transport.sendto(self.message.encode())
+        transport.close()
+
+    def connection_lost(self, err):
+        self.on_close.set_result(True)
+
+
+@pytest.fixture
+async def send_to_udp(arguments, loop):
+    async def send_data(message):
+        transport, protocol = await loop.create_datagram_endpoint(
+            lambda: UDPClientProtocol(message, loop),
+            remote_addr=(arguments.udp_listen, arguments.udp_port))
+        try:
+            await protocol.on_close
+        finally:
+            transport.close()
+    return send_data

@@ -1,6 +1,5 @@
 import asyncio
 
-from aiocarbon.metric import Metric
 import pytest
 
 
@@ -15,18 +14,15 @@ def storage(storage):
     return storage
 
 
-async def test_accepts_metrics(proxy_carbon_client, storage):
-    metrics = [
-        Metric('foo.bar.spam', 42, 1548934966),
-        Metric('foo.bar.spam', 33, 1548934967),
-        Metric('foo.bar.spam', 55, 1548934968)]
-    for metric in metrics:
-        proxy_carbon_client.add(metric)
+async def test_accepts_metrics_from_udp(send_to_udp, storage):
+    await send_to_udp('foo.bar.spam 42 1548934966')
+    await send_to_udp('foo.bar.spam 33 1548934967')
+    await send_to_udp('foo.bar.spam 55 1548934968')
 
     await asyncio.sleep(1)
 
-    assert storage.mock_storage == [
+    assert set(storage.mock_storage) == set([
         ('foo.bar.spam', (1548934966.0, 42)),
         ('foo.bar.spam', (1548934967.0, 33)),
         ('foo.bar.spam', (1548934968.0, 55)),
-    ]
+    ])
