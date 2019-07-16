@@ -6,3 +6,4 @@ pytest-cov
 timeout-decorator
 tox>=2.4
 uvloop
+pylama

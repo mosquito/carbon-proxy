@@ -20,7 +20,7 @@ import async_timeout
 import forklib
 import msgpack
 from aiomisc import entrypoint, threaded, bind_socket
-from aiomisc.service import TCPServer, UDPServer, Service
+from aiomisc.service import TCPServer, UDPServer
 from aiomisc.service.periodic import PeriodicService
 from aiomisc.log import basic_config, LogFormat
 from configargparse import ArgumentParser
@@ -193,7 +193,7 @@ class CarbonTCPServer(TCPServer, StorageBase):
             except asyncio.CancelledError:
                 log.info('Client connection closed after timeout')
                 break
-            except:
+            except:  # noqa
                 continue
 
         log.info("Client disconnected %r", addr)

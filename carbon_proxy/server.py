@@ -91,7 +91,7 @@ async def statistic_receiver(request: Request):
             ts, value = ts_value
             ts = float(ts)
             assert isinstance(value, (int, float, type(None)))
-        except:
+        except:  # noqa
             log.exception("Invalid data in %r", metric)
             raise HTTPBadRequest()
 
