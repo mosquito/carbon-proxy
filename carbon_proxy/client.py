@@ -110,31 +110,32 @@ class Storage:
             return self._write_to(self.write_fp, obj)
 
     def read(self):
-        with open(self.path, 'rb') as fp:
-            self.write_fp.flush()
+        with self.meta_lock:
+            with open(self.path, 'rb') as fp:
+                self.write_fp.flush()
 
-            try:
-                pos, cur = next(self._read_from(self.pos_fp, seek=0))
-            except msgpack.OutOfData:
-                pos = 0
+                try:
+                    pos, cur = next(self._read_from(self.pos_fp, seek=0))
+                except msgpack.OutOfData:
+                    pos = 0
 
-            try:
-                for item, pos in self._read_from(fp, seek=pos):
-                    self._write_to(self.pos_fp, pos, seek=0, truncate=True)
-                    yield item
-            except msgpack.OutOfData:
-                if self.size() > self.ROTATE_SIZE:
-                    self.clear()
+                try:
+                    for item, pos in self._read_from(fp, seek=pos):
+                        self._write_to(self.pos_fp, pos, seek=0, truncate=True)
+                        yield item
+                except msgpack.OutOfData:
+                    if self.size() > self.ROTATE_SIZE:
+                        self.clear()
 
-                return
-            finally:
-                self.pos_fp.flush()
+                    return
+                finally:
+                    self.pos_fp.flush()
 
     def size(self):
         return os.stat(self.path).st_size
 
     def clear(self):
-        with self.write_lock:
+        with self.write_lock, self.meta_lock:
 
             self.write_fp.seek(0)
             self.write_fp.truncate(0)
