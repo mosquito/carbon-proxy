@@ -5,6 +5,7 @@ import pwd
 import sys
 from collections import deque
 from http import HTTPStatus
+from typing import NamedTuple, List
 
 import forklib
 import msgpack
@@ -18,7 +19,7 @@ from aiohttp.web import (
 )
 from aiohttp.web_urldispatcher import UrlDispatcher  # NOQA
 from aiomisc.entrypoint import entrypoint
-from configargparse import ArgumentParser
+from configargparse import ArgumentParser, ArgumentTypeError
 from setproctitle import setproctitle
 
 from aiomisc.service.periodic import PeriodicService
@@ -28,6 +29,31 @@ from aiomisc.log import basic_config, LogFormat
 
 
 log = logging.getLogger()
+
+
+class Route(NamedTuple):
+    prefix: str
+    host: str
+    port: int
+
+
+def parse_routes(routes_raw):
+    routes = []
+    try:
+        for route_raw in routes_raw.split(','):
+            prefix, url = route_raw.split('=')
+            host, port = url.split(':')
+            port = int(port)
+            routes.append(Route(prefix, host, port))
+    except ValueError:
+        raise ArgumentTypeError(
+            'Routes should be key-value pairs of prefix (can be empty string) '
+            ' and host:port separated by commas. For example: '
+            '--routes foo.bar=foo-bar.com:2003,spam=spam.org:2003'
+        )
+    return routes
+
+
 parser = ArgumentParser(auto_env_var_prefix="APP_")
 
 parser.add_argument('-f', '--forks', type=int, default=4)
@@ -51,10 +77,10 @@ group.add_argument('--http-port', type=int, default=8081)
 group.add_argument('-S', '--http-secret', type=str, required=True)
 
 group = parser.add_argument_group('Carbon settings')
-group.add_argument('-H', '--carbon-host', type=str, required=True,
-                   help="TCP protocol host")
-group.add_argument('-P', '--carbon-port', type=int, default=2003,
-                   help="TCP protocol port")
+group.add_argument(
+    '--routes', type=parse_routes, required=True,
+    help="Routes list (i.e.: foo.bar=foo.com:2003,spam=spam.com:2003",
+)
 
 group = parser.add_argument_group('Sender settings')
 parser.add_argument('--sender-interval', default=1, type=int)
@@ -114,23 +140,46 @@ class API(AIOHTTPService):
         return app
 
 
+class CarbonConnection(NamedTuple):
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+
+    def write(self, data):
+        return self.writer.write(data)
+
+
 class Sender(PeriodicService):
-    host: str = None
-    port: int = None
+    __required__ = ('routes', 'interval',)
+
+    routes: List[Route] = None
     interval: int = 1
     bulk_size: int = 10000
     QUEUE: deque = deque()
 
     async def send(self, metrics):
-        reader, writer = await asyncio.open_connection(self.host, self.port)
+        connections = {}
+        for route in self.routes:
+            reader, writer = await asyncio.open_connection(
+                route.host, route.port,
+            )
+            connections[route.prefix] = CarbonConnection(reader, writer)
 
         for name, value, timestamp in metrics:
             d = "%s %s %s\n" % (name, value, timestamp)
-            writer.write(d.encode())
+            for prefix, conn in connections.items():
+                if name.startswith(prefix):
+                    conn.write(d.encode())
+                    break
+            else:
+                log.warning("Metric %s doesn't have suitable route", name)
 
-        await writer.drain()
-        writer.close()
-        reader.feed_eof()
+        drains = []
+        for conn in connections.values():
+            drains.append(conn.writer.drain())
+        await asyncio.gather(*drains, loop=self.loop)
+        for prefix, conn in connections.items():
+            conn.writer.close()
+            conn.reader.feed_eof()
 
     async def callback(self):
         if not self.QUEUE:
@@ -179,8 +228,7 @@ def main():
             sock=sock,
         ),
         Sender(
-            host=arguments.carbon_host,
-            port=arguments.carbon_port,
+            routes=arguments.routes,
             interval=arguments.sender_interval,
         )
     ]

@@ -1,4 +1,5 @@
 import asyncio
+import msgpack
 
 import aiohttp
 import pytest
@@ -12,12 +13,35 @@ from carbon_proxy.server import (
 
 
 @pytest.fixture
+def pack():
+    def do_pack(data):
+        return msgpack.packb(data, use_bin_type=True)
+
+    return do_pack
+
+
+@pytest.fixture
 def http_port(aiomisc_unused_port_factory):
     return aiomisc_unused_port_factory()
 
 
 @pytest.fixture
+def carbon_host():
+    return 'localhost'
+
+
+@pytest.fixture
 def carbon_port(aiomisc_unused_port_factory):
+    return aiomisc_unused_port_factory()
+
+
+@pytest.fixture
+def foo_bar_carbon_host():
+    return 'localhost'
+
+
+@pytest.fixture
+def foo_bar_carbon_port(aiomisc_unused_port_factory):
     return aiomisc_unused_port_factory()
 
 
@@ -27,7 +51,8 @@ def proxy_secret():
 
 
 @pytest.fixture
-def arguments(http_port, carbon_port, proxy_secret):
+def arguments(http_port, carbon_host, carbon_port, proxy_secret,
+              foo_bar_carbon_host, foo_bar_carbon_port):
     return parser.parse_args([
         '--forks', '1',
         '--log-level', 'debug',
@@ -35,8 +60,8 @@ def arguments(http_port, carbon_port, proxy_secret):
         '--http-address', 'localhost',
         '--http-port', str(http_port),
         '--http-secret', proxy_secret,
-        '--carbon-host', 'localhost',
-        '--carbon-port', str(carbon_port),
+        '--routes', f'foo.bar={foo_bar_carbon_host}:{foo_bar_carbon_port},'
+                    f'={carbon_host}:{carbon_port}',
     ])
 
 
@@ -57,8 +82,7 @@ def api_service(arguments):
 @pytest.fixture
 def sender_service(arguments):
     return Sender(
-        host=arguments.carbon_host,
-        port=arguments.carbon_port,
+        routes=arguments.routes,
         interval=arguments.sender_interval,
     )
 
@@ -111,10 +135,19 @@ class Server:
 
 
 @pytest.fixture
-def tcp_server(loop, arguments):
+def tcp_server(loop, carbon_host, carbon_port):
+    server = Server(host=carbon_host, port=carbon_port, loop=loop)
+    try:
+        yield server
+    finally:
+        server.task.cancel()
+
+
+@pytest.fixture
+def foo_bar_tcp_server(loop, foo_bar_carbon_host, foo_bar_carbon_port):
     server = Server(
-        host=arguments.carbon_host,
-        port=arguments.carbon_port,
+        host=foo_bar_carbon_host,
+        port=foo_bar_carbon_port,
         loop=loop,
     )
     try:
