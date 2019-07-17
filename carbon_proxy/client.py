@@ -296,23 +296,28 @@ class SenderService(PeriodicService, StorageBase):
         data = msgpack.packb(payload)
 
         while True:
-            request = self.http_session.post(
-                self.proxy_url,
-                data=data,
-                timeout=self.send_timeout,
-            )
+            try:
+                request = self.http_session.post(
+                    self.proxy_url,
+                    data=data,
+                    timeout=self.send_timeout,
+                )
 
-            log.info("Sending %d bytes to %s", len(data), self.proxy_url)
+                log.info("Sending %d bytes to %s", len(data), self.proxy_url)
 
-            async with request as resp:
-                if resp.status == HTTPStatus.ACCEPTED:
-                    log.debug("Sent %d bytes", len(payload))
-                    break
-                elif resp.status == HTTPStatus.BAD_REQUEST:
-                    log.warning("Bad request %r", payload)
-                    break
-                else:
-                    log.warning("Wrong response %s. Retrying...", resp.status)
+                async with request as resp:
+                    if resp.status == HTTPStatus.ACCEPTED:
+                        log.debug("Sent %d bytes", len(payload))
+                        break
+                    elif resp.status == HTTPStatus.BAD_REQUEST:
+                        log.warning("Bad request %r", payload)
+                        break
+                    else:
+                        log.warning("Wrong response %s. Retrying...",
+                                    resp.status)
+            except Exception:
+                log.exception('Error while sending data')
+                await asyncio.sleep(1)
 
 
 def main():
