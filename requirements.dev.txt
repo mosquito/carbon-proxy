@@ -1,3 +1,4 @@
+aiocarbon~=0.15.1
 coverage!=4.3
 pytest
 pytest-asyncio
@@ -5,3 +6,4 @@ pytest-cov
 timeout-decorator
 tox>=2.4
 uvloop
+pylama

@@ -3,9 +3,9 @@ import logging
 import os
 import pwd
 import sys
-import uuid
 from collections import deque
 from http import HTTPStatus
+from typing import NamedTuple, List
 
 import forklib
 import msgpack
@@ -19,17 +19,41 @@ from aiohttp.web import (
 )
 from aiohttp.web_urldispatcher import UrlDispatcher  # NOQA
 from aiomisc.entrypoint import entrypoint
-from aiomisc.periodic import PeriodicCallback
-from configargparse import ArgumentParser
+from configargparse import ArgumentParser, ArgumentTypeError
 from setproctitle import setproctitle
 
-from aiomisc.service import Service
+from aiomisc.service.periodic import PeriodicService
 from aiomisc.service.aiohttp import AIOHTTPService
 from aiomisc.utils import bind_socket
 from aiomisc.log import basic_config, LogFormat
 
 
 log = logging.getLogger()
+
+
+class Route(NamedTuple):
+    prefix: str
+    host: str
+    port: int
+
+
+def parse_routes(routes_raw):
+    routes = []
+    try:
+        for route_raw in routes_raw.split(','):
+            prefix, url = route_raw.split('=')
+            host, port = url.split(':')
+            port = int(port)
+            routes.append(Route(prefix, host, port))
+    except ValueError:
+        raise ArgumentTypeError(
+            'Routes should be key-value pairs of prefix (can be empty string) '
+            ' and host:port separated by commas. For example: '
+            '--routes foo.bar=foo-bar.com:2003,spam=spam.org:2003'
+        )
+    return routes
+
+
 parser = ArgumentParser(auto_env_var_prefix="APP_")
 
 parser.add_argument('-f', '--forks', type=int, default=4)
@@ -53,15 +77,13 @@ group.add_argument('--http-port', type=int, default=8081)
 group.add_argument('-S', '--http-secret', type=str, required=True)
 
 group = parser.add_argument_group('Carbon settings')
-group.add_argument('-H', '--carbon-host', type=str, required=True,
-                   help="TCP protocol host")
+group.add_argument(
+    '--routes', type=parse_routes, required=True,
+    help="Routes list (i.e.: foo.bar=foo.com:2003,spam=spam.com:2003",
+)
 
-group.add_argument('-P', '--carbon-port', type=int, default=2003,
-                   help="TCP protocol port")
-
-
-# Should be rewrite
-SECRET = str(uuid.uuid4())
+group = parser.add_argument_group('Sender settings')
+parser.add_argument('--sender-interval', default=1, type=int)
 
 
 async def ping(*_):
@@ -77,10 +99,10 @@ async def statistic_receiver(request: Request):
 
     secret = auth.replace("Bearer ", '')
 
-    if secret != SECRET:
+    if request.app['secret'] != secret:
         raise HTTPForbidden()
 
-    payload = msgpack.unpackb(await request.read(), encoding='utf-8')
+    payload = msgpack.unpackb(await request.read(), raw=False)
 
     if not isinstance(payload, list):
         raise HTTPBadRequest()
@@ -91,7 +113,7 @@ async def statistic_receiver(request: Request):
             ts, value = ts_value
             ts = float(ts)
             assert isinstance(value, (int, float, type(None)))
-        except:
+        except:  # noqa
             log.exception("Invalid data in %r", metric)
             raise HTTPBadRequest()
 
@@ -100,54 +122,10 @@ async def statistic_receiver(request: Request):
     return Response(content_type='text/plain', status=HTTPStatus.ACCEPTED)
 
 
-class Sender(Service):
-    host = None  # type: str
-    port = None  # type: int
-    delay = 1
-    bulk_size = 10000
-    handle = None  # type: PeriodicCallback
-    QUEUE = deque()
-
-    async def send(self, metrics):
-        reader, writer = await asyncio.open_connection(self.host, self.port)
-
-        for name, value, timestamp in metrics:
-            d = "%s %s %s\n" % (name, value, timestamp)
-            writer.write(d.encode())
-
-        await writer.drain()
-        writer.close()
-        reader.feed_eof()
-
-    async def send_data(self):
-        if not self.QUEUE:
-            return
-
-        metrics = []
-
-        while self.QUEUE or len(metrics) < self.bulk_size:
-            metrics.append(self.QUEUE.popleft())
-
-        # switch context
-        await asyncio.sleep(0)
-        await self.send(metrics)
-
-    async def start(self):
-        log.info("Starting sender endpoint %s:%d", self.host, self.port)
-        self.handle = PeriodicCallback(self.send_data)
-        self.handle.start(self.delay)
-
-    async def stop(self, *_):
-        self.handle.stop()
-
-        metrics = list(self.QUEUE)
-        self.QUEUE.clear()
-        await self.send(metrics)
-
-
 class API(AIOHTTPService):
-    debug = False
-    secret = os.urandom(32)
+    __required__ = ('secret',)
+
+    secret: str = None
 
     @staticmethod
     async def setup_routes(app: Application):
@@ -156,10 +134,102 @@ class API(AIOHTTPService):
         router.add_post('/stat', statistic_receiver)
 
     async def create_application(self) -> Application:
-        app = Application(debug=self.debug)
+        app = Application()
         app.on_startup.append(self.setup_routes)
         app['secret'] = self.secret
         return app
+
+
+class CarbonConnection(NamedTuple):
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+
+    def write(self, data):
+        return self.writer.write(data)
+
+
+class Sender(PeriodicService):
+    __required__ = ('routes', 'interval',)
+
+    routes: List[Route] = None
+    interval: int = 1
+    bulk_size: int = 10000
+    QUEUE: deque = deque()
+
+    async def connect(self, route: Route):
+        try:
+            reader, writer = await asyncio.open_connection(
+                route.host, route.port,
+            )
+            conn = CarbonConnection(reader, writer)
+        except ConnectionError:
+            log.exception(
+                "Can't connect to %s:%d, "
+                "metrics with prefix %r will be lost",
+                route.host, route.port, route.prefix
+            )
+            conn = None
+        return conn
+
+    async def get_connections(self):
+        prefixes = []
+        tasks = []
+        for route in self.routes:
+            prefixes.append(route.prefix)
+            tasks.append(self.connect(route))
+
+        connections = await asyncio.gather(*tasks)
+
+        return dict(zip(prefixes, connections))
+
+    async def send(self, metrics):
+        connections = await self.get_connections()
+
+        for name, value, timestamp in metrics:
+            d = "%s %s %s\n" % (name, value, timestamp)
+            for prefix, conn in connections.items():
+                if name.startswith(prefix):
+                    if conn is not None:
+                        conn.write(d.encode())
+                    break
+            else:
+                log.warning("Metric %s doesn't have suitable route", name)
+
+        drains = []
+        for conn in connections.values():
+            if conn is None:
+                continue
+            drains.append(conn.writer.drain())
+        await asyncio.gather(*drains, loop=self.loop)
+
+        for prefix, conn in connections.items():
+            if conn is None:
+                continue
+            conn.writer.close()
+            conn.reader.feed_eof()
+
+    async def callback(self):
+        if not self.QUEUE:
+            return
+
+        metrics = []
+
+        while self.QUEUE or len(metrics) < self.bulk_size:
+            try:
+                metrics.append(self.QUEUE.popleft())
+            except IndexError:
+                break
+
+        # switch context
+        await asyncio.sleep(0)
+        await self.send(metrics)
+
+    async def stop(self, *args, **kwargs):
+        await super().stop(*args, **kwargs)
+
+        metrics = list(self.QUEUE)
+        self.QUEUE.clear()
+        await self.send(metrics)
 
 
 def main():
@@ -181,13 +251,12 @@ def main():
 
     services = [
         API(
-            debug=arguments.debug,
             secret=arguments.http_secret,
             sock=sock,
         ),
         Sender(
-            host=arguments.carbon_host,
-            port=arguments.carbon_port,
+            routes=arguments.routes,
+            interval=arguments.sender_interval,
         )
     ]
 
