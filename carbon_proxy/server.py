@@ -18,11 +18,10 @@ from aiohttp.web import (
 )
 from aiohttp.web_urldispatcher import UrlDispatcher  # NOQA
 from aiomisc.entrypoint import entrypoint
-from aiomisc.periodic import PeriodicCallback
 from configargparse import ArgumentParser
 from setproctitle import setproctitle
 
-from aiomisc.service import Service
+from aiomisc.service.periodic import PeriodicService
 from aiomisc.service.aiohttp import AIOHTTPService
 from aiomisc.utils import bind_socket
 from aiomisc.log import basic_config, LogFormat
@@ -54,9 +53,11 @@ group.add_argument('-S', '--http-secret', type=str, required=True)
 group = parser.add_argument_group('Carbon settings')
 group.add_argument('-H', '--carbon-host', type=str, required=True,
                    help="TCP protocol host")
-
 group.add_argument('-P', '--carbon-port', type=int, default=2003,
                    help="TCP protocol port")
+
+group = parser.add_argument_group('Sender settings')
+parser.add_argument('--sender-interval', default=1, type=int)
 
 
 async def ping(*_):
@@ -113,13 +114,12 @@ class API(AIOHTTPService):
         return app
 
 
-class Sender(Service):
-    host = None  # type: str
-    port = None  # type: int
-    delay = 1
-    bulk_size = 10000
-    handle = None  # type: PeriodicCallback
-    QUEUE = deque()
+class Sender(PeriodicService):
+    host: str = None
+    port: int = None
+    interval: int = 1
+    bulk_size: int = 10000
+    QUEUE: deque = deque()
 
     async def send(self, metrics):
         reader, writer = await asyncio.open_connection(self.host, self.port)
@@ -132,7 +132,7 @@ class Sender(Service):
         writer.close()
         reader.feed_eof()
 
-    async def send_data(self):
+    async def callback(self):
         if not self.QUEUE:
             return
 
@@ -148,13 +148,8 @@ class Sender(Service):
         await asyncio.sleep(0)
         await self.send(metrics)
 
-    async def start(self):
-        log.info("Starting sender endpoint %s:%d", self.host, self.port)
-        self.handle = PeriodicCallback(self.send_data)
-        self.handle.start(self.delay)
-
-    async def stop(self, *_):
-        self.handle.stop()
+    async def stop(self, *args, **kwargs):
+        await super().stop(*args, **kwargs)
 
         metrics = list(self.QUEUE)
         self.QUEUE.clear()
@@ -186,6 +181,7 @@ def main():
         Sender(
             host=arguments.carbon_host,
             port=arguments.carbon_port,
+            interval=arguments.sender_interval,
         )
     ]
 

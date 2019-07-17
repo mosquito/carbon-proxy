@@ -59,6 +59,7 @@ def sender_service(arguments):
     return Sender(
         host=arguments.carbon_host,
         port=arguments.carbon_port,
+        interval=arguments.sender_interval,
     )
 
 
