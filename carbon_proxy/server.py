@@ -3,7 +3,6 @@ import logging
 import os
 import pwd
 import sys
-import uuid
 from collections import deque
 from http import HTTPStatus
 

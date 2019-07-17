@@ -12,7 +12,6 @@ from http import HTTPStatus
 from pathlib import Path
 from setproctitle import setproctitle
 from threading import RLock
-from types import MappingProxyType
 
 import aiohttp
 import async_timeout
