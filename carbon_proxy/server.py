@@ -156,28 +156,55 @@ class Sender(PeriodicService):
     bulk_size: int = 10000
     QUEUE: deque = deque()
 
-    async def send(self, metrics):
-        connections = {}
-        for route in self.routes:
+    async def connect(self, route: Route):
+        try:
             reader, writer = await asyncio.open_connection(
                 route.host, route.port,
             )
-            connections[route.prefix] = CarbonConnection(reader, writer)
+            conn = CarbonConnection(reader, writer)
+        except ConnectionError:
+            log.exception(
+                "Can't connect to %s:%d, "
+                "metrics with prefix %r will be lost",
+                route.host, route.port, route.prefix
+            )
+            conn = None
+        return conn
+
+    async def get_connections(self):
+        prefixes = []
+        tasks = []
+        for route in self.routes:
+            prefixes.append(route.prefix)
+            tasks.append(self.connect(route))
+
+        connections = await asyncio.gather(*tasks)
+
+        return dict(zip(prefixes, connections))
+
+    async def send(self, metrics):
+        connections = await self.get_connections()
 
         for name, value, timestamp in metrics:
             d = "%s %s %s\n" % (name, value, timestamp)
             for prefix, conn in connections.items():
                 if name.startswith(prefix):
-                    conn.write(d.encode())
+                    if conn is not None:
+                        conn.write(d.encode())
                     break
             else:
                 log.warning("Metric %s doesn't have suitable route", name)
 
         drains = []
         for conn in connections.values():
+            if conn is None:
+                continue
             drains.append(conn.writer.drain())
         await asyncio.gather(*drains, loop=self.loop)
+
         for prefix, conn in connections.items():
+            if conn is None:
+                continue
             conn.writer.close()
             conn.reader.feed_eof()
 

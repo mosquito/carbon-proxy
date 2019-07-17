@@ -51,8 +51,15 @@ def proxy_secret():
 
 
 @pytest.fixture
-def arguments(http_port, carbon_host, carbon_port, proxy_secret,
-              foo_bar_carbon_host, foo_bar_carbon_port):
+def routes(carbon_host, carbon_port, foo_bar_carbon_host, foo_bar_carbon_port):
+    return (
+        f'foo.bar={foo_bar_carbon_host}:{foo_bar_carbon_port},'
+        f'={carbon_host}:{carbon_port}'
+    )
+
+
+@pytest.fixture
+def arguments(http_port, proxy_secret, routes):
     return parser.parse_args([
         '--forks', '1',
         '--log-level', 'debug',
@@ -60,8 +67,7 @@ def arguments(http_port, carbon_host, carbon_port, proxy_secret,
         '--http-address', 'localhost',
         '--http-port', str(http_port),
         '--http-secret', proxy_secret,
-        '--routes', f'foo.bar={foo_bar_carbon_host}:{foo_bar_carbon_port},'
-                    f'={carbon_host}:{carbon_port}',
+        '--routes', routes,
     ])
 
 
