@@ -139,7 +139,10 @@ class Sender(Service):
         metrics = []
 
         while self.QUEUE or len(metrics) < self.bulk_size:
-            metrics.append(self.QUEUE.popleft())
+            try:
+                metrics.append(self.QUEUE.popleft())
+            except IndexError:
+                break
 
         # switch context
         await asyncio.sleep(0)
