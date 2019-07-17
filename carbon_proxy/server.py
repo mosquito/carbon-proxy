@@ -60,10 +60,6 @@ group.add_argument('-P', '--carbon-port', type=int, default=2003,
                    help="TCP protocol port")
 
 
-# Should be rewrite
-SECRET = str(uuid.uuid4())
-
-
 async def ping(*_):
     return Response(content_type='text/plain', status=HTTPStatus.OK)
 
@@ -77,10 +73,10 @@ async def statistic_receiver(request: Request):
 
     secret = auth.replace("Bearer ", '')
 
-    if secret != SECRET:
+    if request.app['secret'] != secret:
         raise HTTPForbidden()
 
-    payload = msgpack.unpackb(await request.read(), encoding='utf-8')
+    payload = msgpack.unpackb(await request.read(), raw=False)
 
     if not isinstance(payload, list):
         raise HTTPBadRequest()
@@ -98,6 +94,24 @@ async def statistic_receiver(request: Request):
         Sender.QUEUE.append((name, value, ts))
 
     return Response(content_type='text/plain', status=HTTPStatus.ACCEPTED)
+
+
+class API(AIOHTTPService):
+    __required__ = ('secret',)
+
+    secret: str = None
+
+    @staticmethod
+    async def setup_routes(app: Application):
+        router = app.router  # type: UrlDispatcher
+        router.add_get('/ping', ping)
+        router.add_post('/stat', statistic_receiver)
+
+    async def create_application(self) -> Application:
+        app = Application()
+        app.on_startup.append(self.setup_routes)
+        app['secret'] = self.secret
+        return app
 
 
 class Sender(Service):
@@ -145,23 +159,6 @@ class Sender(Service):
         await self.send(metrics)
 
 
-class API(AIOHTTPService):
-    debug = False
-    secret = os.urandom(32)
-
-    @staticmethod
-    async def setup_routes(app: Application):
-        router = app.router  # type: UrlDispatcher
-        router.add_get('/ping', ping)
-        router.add_post('/stat', statistic_receiver)
-
-    async def create_application(self) -> Application:
-        app = Application(debug=self.debug)
-        app.on_startup.append(self.setup_routes)
-        app['secret'] = self.secret
-        return app
-
-
 def main():
     global SECRET
 
@@ -181,7 +178,6 @@ def main():
 
     services = [
         API(
-            debug=arguments.debug,
             secret=arguments.http_secret,
             sock=sock,
         ),
