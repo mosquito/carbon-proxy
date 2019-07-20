@@ -58,6 +58,10 @@ group.add_argument('-S', '--carbon-proxy-secret', type=str, required=True)
 group = parser.add_argument_group('Storage settings')
 group.add_argument('-s', '--storage', type=Path, required=True)
 
+group = parser.add_argument_group('Sender settings')
+group.add_argument('--sender-interval', type=int, required=True, default=10)
+group.add_argument('--chunk-size', type=int, required=True, default=10_000)
+
 
 class Storage:
     ROTATE_SIZE = 2 ** 20
@@ -83,7 +87,7 @@ class Storage:
 
             try:
                 result = unpacker.unpack()
-                cur = fp.tell()
+                cur = unpacker.tell()
 
                 yield result, cur
             except Exception:
@@ -110,13 +114,15 @@ class Storage:
                 self.write_fp.flush()
 
                 try:
-                    pos, cur = next(self._read_from(self.pos_fp, seek=0))
+                    start_pos, _ = next(self._read_from(self.pos_fp, seek=0))
                 except msgpack.OutOfData:
-                    pos = 0
+                    start_pos = 0
 
                 try:
-                    for item, pos in self._read_from(fp, seek=pos):
-                        self._write_to(self.pos_fp, pos, seek=0, truncate=True)
+                    for item, pos in self._read_from(fp, seek=start_pos):
+                        self._write_to(
+                            self.pos_fp, start_pos + pos, seek=0, truncate=True,
+                        )
                         yield item
                 except msgpack.OutOfData:
                     if self.size() > self.ROTATE_SIZE:
@@ -271,6 +277,7 @@ class SenderService(PeriodicService, StorageBase):
     send_timeout: int = 30
     headers: dict = None
     http_session: aiohttp.ClientSession
+    chunk_size: int = 10_000
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -288,7 +295,7 @@ class SenderService(PeriodicService, StorageBase):
         await super().stop(*args, **kwargs)
 
     async def callback(self):
-        payload = await self.storage.read_async()
+        payload = await self.storage.read_async(chunk_size=self.chunk_size)
 
         if not payload:
             return
@@ -361,6 +368,8 @@ def main():
                 proxy_url=arguments.carbon_proxy_url,
                 secret=arguments.carbon_proxy_secret,
                 storage=storage,
+                interval=arguments.sender_interval,
+                chunk_size=arguments.chunk_size,
             )
         ]
 
