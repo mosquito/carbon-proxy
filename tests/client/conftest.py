@@ -52,6 +52,8 @@ def arguments(tcp_port, udp_port, pickle_port, server_port, proxy_secret,
         '--carbon-proxy-url', f'http://localhost:{server_port}/',
         '--carbon-proxy-secret', proxy_secret,
         '--storage', str(tmpdir.mkdir('client')),
+        '--sender-interval', '1',
+        '--chunk-size', '1000',
     ])
 
 
