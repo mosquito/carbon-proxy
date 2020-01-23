@@ -1,4 +1,4 @@
-Carbon Proxy
+Jaeger Proxy
 ============
 
-Proxy carbon via http(s)
+Proxy jaeger via http(s)

@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 
 from importlib.machinery import SourceFileLoader
 
-module_name = 'carbon_proxy'
+module_name = 'jaeger_proxy'
 executable_name = module_name.replace('_', '-')
 
 module = SourceFileLoader(
@@ -41,7 +41,7 @@ setup(
         'Operating System :: POSIX',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: Implementation :: CPython',
         'Topic :: Internet',
     ],
@@ -49,11 +49,7 @@ setup(
     install_requires=load_requirements('requirements.txt'),
     entry_points={
         'console_scripts': [
-            '{0} = {1}.client:main'.format(
-                executable_name,
-                module_name,
-            ),
-            '{0}-server = {1}.server:main'.format(
+            '{0}-server = {1}.main:main'.format(
                 executable_name,
                 module_name,
             ),
