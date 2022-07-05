@@ -3,6 +3,6 @@ aiomisc~=8.0.0
 ConfigArgParse<0.20
 forklib~=0.2.1
 msgpack-python~=0.5.6
-pycares==2.3.0
+pycares==4.2.0
 setproctitle~=1.1.10
 yarl<=1.2.0
